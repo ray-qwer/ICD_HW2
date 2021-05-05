@@ -12,7 +12,8 @@ wire [15:0] dot_dist;
 wire [7:0] sqrOutput [0:3]; 
 wire toR,OofR,inC;
 wire [3:0] _candidate; 
-reg [1:0] states;
+reg [1:0] states,statesN;
+reg busyN;
 wire fin0;
 reg fin [0:3];
 reg start [0:3];
@@ -20,9 +21,17 @@ reg k [0:1];
 reg realEn;
 reg [15:0] centralR,centralRN;
 reg [7:0] radiusR,radiusRN;
+wire stateChange [0:2];
+wire busyChange [0:1];
+
 // assign
 assign sqrInput = (realEn)?{radiusR[7:4],4'b0,radiusR[3:0],4'b0}:dot_dist;
 assign candidate = (valid)?_candidate:4'b0;
+assign stateChange[0] = (states==2'b01 & !rst)?1'b1:1'b0;
+assign stateChange[1] = (states==2'b10 & realEn)?1'b1:1'b0;
+assign stateChange[2] = (states==2'b11 & fin[3])?1'b1:1'b0;
+assign busyChange[0] = (states==2'b11)?1'b1:1'b0;
+assign busyChange[1] = (states==2'b10)?1'b1:1'b0;
 // module
 Square sqr(
     .x1(sqrInput[15:12]), .y1(sqrInput[11:8]), .x2(sqrInput[7:4]), .y2(sqrInput[3:0]), 
@@ -49,19 +58,27 @@ always @(*) begin
     k[1] = en;
     centralRN = central;
     radiusRN = radius;
+    statesN = states;
+    busyN = busy;
+
 end
-always @(posedge clk or posedge rst) begin 
+always @(posedge clk) begin 
     realEn <= k[1];
     centralR <= centralRN;
     radiusR <= radiusRN;
-    // realEn <= en;
     fin[0] <= k[0];
     start[0] <= k[1];
+end
+always @(posedge clk or posedge rst) begin
+    
     if (rst) begin
         for (i = 1;i<4;i = i+1) begin
             fin[i] <= 1'b0;
             start[i] <= 1'b0;
         end
+        // if (fin[3]==1'b1) valid <= 1'b1;
+        // else if (states == 2'b11) busy <= 1'b1;
+        // else if (states == 2'b10) busy <= 1'b0;
     end
     else begin
         for (i = 1;i<4;i=i+1) begin
@@ -69,20 +86,26 @@ always @(posedge clk or posedge rst) begin
             start[i] <= start[i-1];
         end    
     end
-    busy <= busy;
-    valid <= 1'b0;
-    if (fin[3]==1'b1) valid <= 1'b1;
-    if (states == 2'b11) busy <= 1'b1;
-    else if (states == 2'b10) busy <= 1'b0;
+    
+end
+always @(posedge clk) begin
+    if (fin[3]) valid <= 1'b1;
+    else valid <= 1'b0;
+end
+
+always @(busyChange[0] or busyChange[1]) begin
+    if (busyChange[0]) busy <= 1'b1;
+    else if (busyChange[1]) busy <= 1'b0;    
+    else busy <= busyN;
 end
 // state
-always @(posedge clk or posedge en) begin
-    states <= states;
+
+always @(posedge clk) begin
     if (rst) states<=2'b01;
-    if (states == 2'b01 && rst== 1'b0)   states <= 2'b10;
-    if (states == 2'b10 && en == 1'b1)   states <= 2'b11;
-    if (states == 2'b11 && fin[3] == 1'b1) states <= 2'b10;
-    
+    else if (stateChange[0])   states <= 2'b10;
+    else if (stateChange[1])   states <= 2'b11;
+    else if (stateChange[2]) states <= 2'b10;
+    else states <= statesN;
 end
 
 endmodule
@@ -118,6 +141,15 @@ always @(*) begin
     y12 = y1*y1;
     y22 = y2*y2;
     OutofRNext = 1'b0;
+    if ((x1 > r1 || y1 > r1 || x2 > r2 || y2 > r2) &!isR) begin
+        x12 = 8'b0;
+        x22 = 8'b0;
+        y12 = 8'b0;
+        y22 = 8'b0;
+        OutofRNext = 1'b1;
+    end
+end
+always @(*) begin
     if (isR) begin
         r1Next = x1;
         r2Next = x2;
@@ -128,14 +160,6 @@ always @(*) begin
         r2Next = r2;
         toRNext = 1'b0;
     end
-    if ((x1 > r1 || y1 > r1 || x2 > r2 || y2 > r2) &!isR) begin
-        x12 = 8'b0;
-        x22 = 8'b0;
-        y12 = 8'b0;
-        y22 = 8'b0;
-        OutofRNext = 1'b1;
-    end
-    
 end
 always @(posedge clk) begin
     r1 <= r1Next;
@@ -176,6 +200,8 @@ always @(*) begin
         s_r1Next = s_r1;
         s_r2Next = s_r2;
     end 
+end
+always @(*) begin
     if (OutofR) inCircleNext = 1'b0;
     else if ((x1 + y1) > s_r1 || (x2 + y2) > s_r2) inCircleNext = 1'b0;
     else inCircleNext = 1'b1;
@@ -197,12 +223,13 @@ module counter(
 input reset,inCircle,clk,en;
 output reg [3:0] total;
 reg [3:0] totalNext;
-always @(posedge clk or posedge en ) begin
-    if (reset | en) total <= 4'b0;
+wire totalChange = reset|en;
+always @(posedge clk) begin
+    if (totalChange) total <= 4'b0;
     else total <= total + {3'b0,inCircle}; 
 end
 endmodule
-
+// latch here: c1Next, c2Next, fin
 module control(
     c1,
     c2,
@@ -220,7 +247,8 @@ input [7:0] c1, c2;
 output reg [3:0] x1,x2,y1,y2;
 output reg fin;
 // reg [3:0] Eleft, Eright,Eup,Edown;
-reg [3:0] xNow, yNow,xNext,yNext,x1Next,x2Next,y1Next,y2Next;
+reg [3:0] xNow, yNow,xNext,yNext;
+wire [3:0] x1Next,x2Next,y1Next,y2Next;
 reg [7:0] _c1, _c2;
 // always @(*) begin
 //     if (Eleft > Eright || Edown > Eup)  fin = 1'b1;
@@ -228,20 +256,21 @@ reg [7:0] _c1, _c2;
 //     else fin = 1'b0;
 // end
 reg [7:0] c1Next, c2Next;
+assign x1Next = (xNow > _c1[7:4])?(xNow - _c1[7:4]):(_c1[7:4] - xNow);
+assign x2Next = (xNow > _c2[7:4])?(xNow - _c2[7:4]):(_c2[7:4] - xNow);
+assign y1Next = (yNow > _c1[3:0])?(yNow - _c1[3:0]):(_c1[3:0] - yNow);
+assign y2Next = (yNow > _c2[3:0])?(yNow - _c2[3:0]):(_c2[3:0] - yNow);
 always @(*) begin
     c1Next = _c1;
     c2Next = _c2;
-    
-    
-    if(xNow > _c1[7:4]) x1Next = xNow - _c1[7:4];
-    else x1Next = _c1[7:4] - xNow;
-    if (xNow > _c2[7:4]) x2Next = xNow - _c2[7:4];
-    else x2Next = _c2[7:4] -xNow;
-    if(yNow > _c1[3:0]) y1Next = yNow - _c1[3:0];
-    else y1Next = _c1[3:0] - yNow;
-    if (yNow > _c2[3:0]) y2Next = yNow - _c2[3:0];
-    else y2Next = _c2[3:0] - yNow;
-    if (xNow == 4'd9) begin
+    if(enEdge) begin
+    c1Next = c1;
+    c2Next = c2;
+    xNext = 4'd0;
+    yNext = 4'd0;
+    fin = 1'b0;
+    end
+    else if (xNow == 4'd9) begin
         if (yNow == 4'd9) begin
             fin = 1'b1;
             xNext = 4'b0;
@@ -258,14 +287,10 @@ always @(*) begin
         xNext = xNow + 1;
         yNext = yNow;
     end
-    if(enEdge) begin
-        c1Next = c1;
-        c2Next = c2;
-        xNext = 4'd0;
-        yNext = 4'd0;
-    end
+ 
+
 end
-always @( posedge clk or posedge enEdge ) begin
+always @( posedge clk ) begin
         xNow <= xNext;
         yNow <= yNext;
         _c1 <= c1Next;
